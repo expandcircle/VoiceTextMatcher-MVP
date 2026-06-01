@@ -10,9 +10,14 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 32) {
             
+            Text("현재 단계: \(manager.currentStageIndex + 1) / \(manager.targetStages.count)")
+                .font(.headline)
+                .foregroundStyle(.blue)
+            
             // MARK: - 단어 매칭 상태 표시
             HStack(spacing: 12) {
-                ForEach(Array(manager.targetWords.enumerated()), id: \.offset) { index, word in
+                ForEach(
+                    Array(manager.targetStages[manager.currentStageIndex].enumerated()), id: \.offset) { index, word in
                     Text(word)
                         .font(.title2.bold())
                         .foregroundColor(index <= manager.currentIndex ? .green : .gray)
