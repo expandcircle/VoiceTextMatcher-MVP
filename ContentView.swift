@@ -18,10 +18,10 @@ struct ContentView: View {
             HStack(spacing: 12) {
                 ForEach(
                     Array(manager.targetStages[manager.currentStageIndex].enumerated()), id: \.offset) { index, word in
-                    Text(word)
-                        .font(.title2.bold())
-                        .foregroundColor(index <= manager.currentIndex ? .green : .gray)
-                }
+                        Text(word)
+                            .font(.title2.bold())
+                            .foregroundColor(index <= manager.currentIndex ? .green : .gray)
+                    }
             }
             
             // MARK: - 실시간 인식 텍스트
@@ -67,6 +67,34 @@ struct ContentView: View {
                     .background(manager.isRecording ? Color.red : Color.blue)
                     .foregroundColor(.white)
                     .cornerRadius(10)
+            }
+            if manager.isCurrentStageComplete && !manager.isLastStage {
+                Button(action: {
+                    manager.goToNextStage()
+                }) {
+                    Text("다음 단계")
+                        .font(.headline)
+                        .padding(.horizontal, 32)
+                        .padding(.vertical, 12)
+                        .background(Color.green)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                }
+            } else if manager.isCurrentStageComplete && manager.isLastStage {
+                // 모든 단계 완료
+                Button(action: {
+                    let allFiles = manager.allRecordingURLs()
+                    print("ML 전달 준비: \(allFiles)")
+                    // ML로 전달하는 로직 추가
+                }) {
+                    Text("완료, 결과확인")
+                        .font(.headline)
+                        .padding(.horizontal, 32)
+                        .padding(.vertical, 12)
+                        .background(Color.purple)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                }
             }
         }
         .padding()

@@ -9,103 +9,187 @@
     import Combine
 
     @MainActor
-    class SpeechMatcherManager: ObservableObject {
-        
-        // MARK: - Published Properties
-        @Published var recognizedText: String = ""
-        @Published var currentIndex: Int = -1           //currentIndex = 한 문장 내 띄어쓰기 단위로 구분
-        @Published var currentStageIndex: Int = 0       //currentStageIndex = 여러 문장 단계로 구분
-        @Published var isRecording: Bool = false
-        @Published var errorMessage: String? = nil
-        
-        // MARK: - Target Words
-        let targetStages: [[String]] = [
-            //1단계
-            ["산토끼", "토끼야", "어디를", "가느냐"],
-            //2단계
-            ["나비야", "나비야", "이리", "날아오너라"],
-            //3단계
-            ["떴다", "떴다", "비행기", "날아라", "날아라"],
-            //4단계
-            ["곰세마리가", "한집에있어", "아빠곰", "엄마곰", "애기곰"]
-        ]
-        
-        // MARK: - Private Properties
-        private var audioEngine = AVAudioEngine()
-        private var speechRecognizer: SFSpeechRecognizer?
-        private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
-        private var recognitionTask: SFSpeechRecognitionTask?
-        
-        // MARK: - Init
-        init() {
-            speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "ko-KR"))
-        }
-        
-        // MARK: - Public Methods
-        
-        /// 권한 확인 후 녹음 시작
-        func startRecording() {
-            requestPermissions { [weak self] granted in
-                guard let self = self else { return }
-                if granted {
-                    Task { @MainActor in
-                        do {
-                            try self.startSpeechRecognition()
-                        } catch {
-                            self.errorMessage = "음성 인식 시작 실패: \(error.localizedDescription)"
-                        }
+class SpeechMatcherManager: ObservableObject {
+    
+    // MARK: - Published Properties
+    @Published var recognizedText: String = ""
+    @Published var currentIndex: Int = -1           //currentIndex = 한 문장 내 띄어쓰기 단위로 구분
+    @Published var currentStageIndex: Int = 0       //currentStageIndex = 여러 문장 단계로 구분
+    @Published var isRecording: Bool = false
+    @Published var errorMessage: String? = nil
+    @Published var isPlaying: Bool = false
+    
+    // MARK: - Target Words
+    let targetStages: [[String]] = [
+        //1단계
+        ["안녕", "하세요"],
+        //2단계
+        ["만나서", "반가워요"],
+        //3단계
+       // ["안녕", "하세요"],
+        //4단계
+       // ["만나서", "반가워요"]
+    ]
+    
+    // MARK: - Private Properties
+    private var audioEngine = AVAudioEngine()
+    private var speechRecognizer: SFSpeechRecognizer?
+    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var recognitionTask: SFSpeechRecognitionTask?
+    private var audioFile: AVAudioFile?
+    private var recordingURLs: [Int: URL] = [:]
+    private var audioPlayer: AVAudioPlayer?
+    
+    
+    // MARK: - Init
+    init() {
+        speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "ko-KR"))
+    }
+    
+    // MARK: - Public Methods
+    
+    /// 권한 확인 후 녹음 시작
+    func startRecording() {
+        requestPermissions { [weak self] granted in
+            guard let self = self else { return }
+            if granted {
+                Task { @MainActor in
+                    do {
+                        try self.startSpeechRecognition()
+                    } catch {
+                        self.errorMessage = "음성 인식 시작 실패: \(error.localizedDescription)"
                     }
-                } else {
-                    Task { @MainActor in
-                        self.errorMessage = "마이크 또는 음성 인식 권한이 없습니다."
-                    }
+                }
+            } else {
+                Task { @MainActor in
+                    self.errorMessage = "마이크 또는 음성 인식 권한이 없습니다."
                 }
             }
         }
+    }
+    
+    /// 녹음 종료
+    func stopRecording() {
+        audioEngine.stop()
+        audioEngine.inputNode.removeTap(onBus: 0)
+        recognitionRequest?.endAudio()
+        recognitionTask?.cancel()
+        recognitionRequest = nil
+        recognitionTask = nil
         
-        /// 녹음 종료
-        func stopRecording() {
-            audioEngine.stop()
-            audioEngine.inputNode.removeTap(onBus: 0)
-            recognitionRequest?.endAudio()
-            recognitionTask?.cancel()
-            recognitionRequest = nil
-            recognitionTask = nil
-            isRecording = false
+        if let audioFile = audioFile {
+            recordingURLs[currentStageIndex] = audioFile.url
+            print("저장완료: \(audioFile.url.lastPathComponent)")
         }
+        audioFile = nil
         
-        // MARK: - Matching Logic
+        isRecording = false
+    }
+    
+    // MARK: - Matching Logic
+    
+    /// 인식된 텍스트와 targetWords를 앞에서부터 순서대로 매칭
+    /// 띄어쓰기 오류를 허용하기 위해 공백 제거 후 비교 :: 산 토끼 = 산토끼
+    func checkMatching(recognizedText: String) -> Int {
+        // 공백 제거한 인식 텍스트
+        let cleanedRecognized = recognizedText
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "\n", with: "")
         
-        /// 인식된 텍스트와 targetWords를 앞에서부터 순서대로 매칭
-        /// 띄어쓰기 오류를 허용하기 위해 공백 제거 후 비교 :: 산 토끼 = 산토끼
-        func checkMatching(recognizedText: String) -> Int {
-            // 공백 제거한 인식 텍스트
-            let cleanedRecognized = recognizedText
-                .replacingOccurrences(of: " ", with: "")
-                .replacingOccurrences(of: "\n", with: "")
+        let currentStageWords = targetStages[currentStageIndex]
+        
+        // targetWords를 순서대로 붙여서 누적 매칭
+        var cumulativeTarget = ""
+        var matchedIndex = -1
+        
+        for (index, word) in currentStageWords.enumerated() {
+            // 공백 제거한 단어
+            let cleanedWord = word.replacingOccurrences(of: " ", with: "")
+            cumulativeTarget += cleanedWord
             
-            let currentStageWords = targetStages[currentStageIndex]
-            
-            // targetWords를 순서대로 붙여서 누적 매칭
-            var cumulativeTarget = ""
-            var matchedIndex = -1
-            
-            for (index, word) in currentStageWords.enumerated() {
-                // 공백 제거한 단어
-                let cleanedWord = word.replacingOccurrences(of: " ", with: "")
-                cumulativeTarget += cleanedWord
-                
-                // 인식 텍스트가 누적 타겟 문자열을 포함하는지 확인
-                if cleanedRecognized.contains(cumulativeTarget) {
-                    matchedIndex = index
-                } else {
-                    // 순서가 깨지면 더 이상 확인하지 않음
-                    break
-                }
+            // 인식 텍스트가 누적 타겟 문자열을 포함하는지 확인
+            if cleanedRecognized.contains(cumulativeTarget) {
+                matchedIndex = index
+            } else {
+                // 순서가 깨지면 더 이상 확인하지 않음
+                break
             }
-            
-            return matchedIndex
         }
+        
+        return matchedIndex
+    }
+    // MARK: - Stage control
+    /// 현재 단계의 모든 단어를 매칭했는가
+    var isCurrentStageComplete: Bool {
+        currentIndex == targetStages[currentStageIndex].count - 1
+    }
+        
+    var isLastStage: Bool {
+        currentStageIndex == targetStages.count - 1
+    }
+    
+    func goToNextStage() {
+        guard !isLastStage else { return }
+        if isRecording { stopRecording() }
+        currentStageIndex += 1
+        currentIndex = -1
+        recognizedText = ""
+        errorMessage = nil
+    }
+        
+    
+    //MARK: - Playback (다시듣기)
+    /// 특정 단계 녹음 존재 여부 확인
+    func hasRecording(for stageIndex: Int) -> Bool {
+        return recordingURLs[stageIndex] != nil
+    }
+    
+    /// 특정 단계 녹음 파일 재생
+    func playRecording(for stageIndex: Int) {
+        guard let url = recordingURLs[stageIndex] else {
+            errorMessage = "\(stageIndex + 1) 단계 의 녹음 파일이 없습니다."
+            return
+        }
+        
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default)
+            try session.setActive(true)
+            
+            audioPlayer = try AVAudioPlayer(contentsOf: url)
+            audioPlayer?.play()
+            isPlaying = true
+            print("재생 중: \(url.lastPathComponent)")
+        } catch {
+            errorMessage = "재생실패: \(error.localizedDescription)"
+        }
+    }
+    
+    /// 재생 중지
+    func stopPlayback() {
+        audioPlayer?.stop()
+        audioPlayer = nil
+    }
+    
+    /// 현재 단계 녹음 다시 듣기
+    func playCurrentRecording() {
+        playRecording(for: currentStageIndex)
+    }
+    
+    /// 모든 녹음 파일 URL 반환 (ML에 넘기기용)
+    func allRecordingURLs() -> [Int : URL] {
+        return recordingURLs
+    }
+    
+    /// 녹음 파일 전체 삭제
+    func clearAllRecordings() {
+        for (_, url) in recordingURLs {
+            try? FileManager.default.removeItem(at: url)
+        }
+        recordingURLs.removeAll()
+        print("모든 녹음 파일 삭제 완료")
+    }
+    
         
         // MARK: - Private Methods
         
@@ -174,12 +258,30 @@
                 }
             }
             
+         
+            
             // 오디오 탭 설정
             let inputNode = audioEngine.inputNode
             let recordingFormat = inputNode.outputFormat(forBus: 0)
+         
+            
+            // 녹음 파일 생성
+            let url = recordingURL(for: currentStageIndex)
+            let settings: [String:Any] = [
+                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                AVSampleRateKey: 44100.0,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+            ]
+            audioFile = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+            
+            //installTap
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
                 self.recognitionRequest?.append(buffer)
+                try? self.audioFile?.write(from: buffer)
             }
+            
+            
             
             // 오디오 엔진 시작
             audioEngine.prepare()
@@ -190,6 +292,12 @@
             currentIndex = -1
             errorMessage = nil
             isRecording = true
+            
+            
+        }
+        private func recordingURL(for stageIndex: Int) -> URL {
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask) [0]
+            return docs.appendingPathComponent("stage_\(stageIndex).m4a")
         }
         
         // MARK: - Error Types
